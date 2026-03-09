@@ -148,22 +148,93 @@ async def _web_search(query: str) -> str:
         return f"[Search error: {exc}]"
 
 
+_SANDBOX_FORBIDDEN_MODULES: frozenset[str] = frozenset({
+    "os", "sys", "subprocess", "socket", "shutil", "pathlib",
+    "importlib", "ctypes", "threading", "multiprocessing",
+    "signal", "pty", "termios", "fcntl", "resource",
+    "pickle", "marshal", "shelve", "dbm",
+    "urllib", "http", "ftplib", "smtplib",
+    "telnetlib", "xmlrpc", "ssl",
+    "builtins", "__builtin__",
+})
+
+_SANDBOX_FORBIDDEN_BUILTINS: frozenset[str] = frozenset({
+    "exec", "eval", "compile", "__import__", "open",
+    "input", "breakpoint", "memoryview",
+})
+
+_SANDBOX_FORBIDDEN_ATTRS: frozenset[str] = frozenset({
+    "system", "popen", "exec_command", "spawn",
+    "__class__", "__subclasses__", "__globals__", "__builtins__",
+})
+
+import ast as _ast
+
+
+def _sandbox_check(code: str) -> str | None:
+    """
+    AST-level sandbox inspection.
+    Returns an error string if the code is unsafe, else None.
+
+    Defends against:
+      - Direct and aliased imports of forbidden modules
+      - Calls to dangerous built-ins (exec, eval, open, ...)
+      - Attribute access to escape hatches (__subclasses__, __globals__, ...)
+      - from X import Y for forbidden modules
+    """
+    try:
+        tree = _ast.parse(code)
+    except SyntaxError as exc:
+        return f"[Blocked: Invalid Python syntax: {exc}]"
+
+    for node in _ast.walk(tree):
+        # import X  /  import X as Y
+        if isinstance(node, _ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".")[0]
+                if top in _SANDBOX_FORBIDDEN_MODULES:
+                    return f"[Blocked: 'import {alias.name}' is not allowed in the sandbox]"
+
+        # from X import Y
+        elif isinstance(node, _ast.ImportFrom):
+            top = (node.module or "").split(".")[0]
+            if top in _SANDBOX_FORBIDDEN_MODULES:
+                return f"[Blocked: 'from {node.module} import ...' is not allowed in the sandbox]"
+
+        # Direct calls: exec(...), eval(...), open(...), __import__(...)
+        elif isinstance(node, _ast.Call):
+            if isinstance(node.func, _ast.Name):
+                if node.func.id in _SANDBOX_FORBIDDEN_BUILTINS:
+                    return f"[Blocked: '{node.func.id}()' is not allowed in the sandbox]"
+            # obj.system(...), obj.__subclasses__(), etc.
+            elif isinstance(node.func, _ast.Attribute):
+                if node.func.attr in _SANDBOX_FORBIDDEN_ATTRS:
+                    return f"[Blocked: dangerous attribute '{node.func.attr}' is not allowed]"
+
+        # Attribute access: x.__globals__, x.__class__, etc.
+        elif isinstance(node, _ast.Attribute):
+            if node.attr in _SANDBOX_FORBIDDEN_ATTRS:
+                return f"[Blocked: access to '{node.attr}' is not allowed in the sandbox]"
+
+    return None
+
+
 async def _python_repl(code: str) -> str:
     """
     Execute Python code in a subprocess with a hard timeout.
 
     Security notes:
+      - AST-level inspection blocks forbidden imports and dangerous built-ins
+        before any code reaches the subprocess, defeating simple bypass attempts
+        like `from os import system` or `__builtins__['exec']`.
       - The subprocess inherits the current environment but cannot communicate
         back except via stdout/stderr.
       - Timeout is enforced at OS level (subprocess.run timeout).
       - For production, replace with E2B cloud sandbox or Docker container.
     """
-    # Basic safety: reject obvious injection patterns
-    forbidden = ["import os", "import sys", "subprocess", "__import__", "open(", "exec(", "eval("]
-    code_lower = code.lower()
-    for pattern in forbidden:
-        if pattern in code_lower:
-            return f"[Blocked: '{pattern}' is not allowed in the sandbox]"
+    block_reason = _sandbox_check(code)
+    if block_reason:
+        return block_reason
 
     try:
         proc = await asyncio.to_thread(

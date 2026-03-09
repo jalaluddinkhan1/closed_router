@@ -154,7 +154,22 @@ async def aggregate(
         logger.info(
             "Aggregator: deterministic result from '%s' chosen", best.expert_name
         )
-        return best.output  # type: ignore[return-value]
+        # Run verifier to sanity-check the deterministic output before returning
+        try:
+            from app.core import verifier as _verifier
+            ver = await _verifier.verify(query, best.output)  # type: ignore[arg-type]
+            if ver.passed:
+                logger.debug("Verifier OK for '%s': %s", best.expert_name, ver.reason)
+                return best.output  # type: ignore[return-value]
+            else:
+                logger.warning(
+                    "Verifier REJECTED '%s' output (%s) — falling through to LLM",
+                    best.expert_name, ver.reason,
+                )
+                # Fall through to LLM priority below
+        except Exception as exc:
+            logger.warning("Verifier call failed (%s) — trusting deterministic output", exc)
+            return best.output  # type: ignore[return-value]
 
     # ── Priority 2: Tool results → synthesize ────────────────────────────────
     tool_results = [r for r in successes if r.expert_name in _TOOL_EXPERTS]

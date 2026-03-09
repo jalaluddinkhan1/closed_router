@@ -177,11 +177,8 @@ async def chat_completions(
         cost_saved_usd=0.0,
     )
 
-    # ── 5. Semantic feedback loop — store successful Mode 2 routes in Qdrant ──
-    if (
-        not routing.pii_detected
-        and routing.decision_layer != "layer2_semantic"
-    ):
+    # ── 5. Semantic feedback loop — store successful routes in Qdrant ──
+    if not routing.pii_detected:
         query_text = " ".join(
             msg.content for msg in body.messages
             if msg.role == "user" and msg.content

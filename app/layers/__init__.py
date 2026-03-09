@@ -4,14 +4,12 @@ app/layers/__init__.py
 Routing layer exports.
 
 Active:
-  layer1_rules — Safety gate (PII, blocked topics, profanity). Still used by
-                 node_safety_gate in app/routing_graph.py.
+  layer1_rules — Safety gate (PII, blocked models, tier enforcement, token limits).
+                 Called by node_safety_gate in app/routing_graph.py.
 
 Superseded by MoE (app/experts/):
-  layer2_semantic — Qdrant-based semantic model selector. No longer called;
-                    expert capability embeddings replace this function.
-  layer3_agent    — ReAct agent runner. No longer called; WebSearchExpert and
-                    PythonReplExpert in the MoE registry cover this function.
+  Expert capability embeddings, WebSearchExpert, and PythonReplExpert in the
+  MoE registry fully replace the old semantic and agentic layers.
 """
 
 from app.layers import layer1_rules

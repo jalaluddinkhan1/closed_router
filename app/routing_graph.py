@@ -156,9 +156,8 @@ async def node_moe_execute(state: RouterState) -> RouterState:
     # Best confidence = score of highest-scored expert
     top_score = selected[0][1] if selected else 0.5
 
-    # Cost saved = sum of savings from deterministic experts
+    # Cost saved = what Mode 2 would have charged for the same tokens, per deterministic hit
     cost_saved = sum(
-        r.latency_ms * 0.0 +  # no cost for deterministic
         settings.mode2_reference_cost_per_1k * (max(50, len(query) // 4) / 1000)
         for r in expert_results
         if r.success and r.expert_name in _DETERMINISTIC_NAMES

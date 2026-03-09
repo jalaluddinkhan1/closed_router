@@ -187,10 +187,21 @@ def handle_json_format(query: str) -> DeterministicResult | None:
         return None
 
 
-_PII_REDACT_TRIGGER = re.compile(
-    r"\b(redact|mask|remove|hide|anonymize|anonymise|censor|scrub)\b.{0,40}"
-    r"\b(pii|ssn|email|phone|credit.?card|password|personal|private|sensitive)\b",
-    re.IGNORECASE | re.DOTALL,
+# Action verbs that signal the user wants to process / clean text
+_PII_ACTION_TRIGGER = re.compile(
+    r"\b(redact|mask|remove|hide|anonymize|anonymise|censor|scrub|"
+    r"clean|strip|delete|erase|replace|protect|sanitize|sanitise|"
+    r"obfuscate|process|handle|filter|purge|wipe)\b",
+    re.IGNORECASE,
+)
+
+# Explicit PII-type keywords — shortcut that avoids a Presidio scan
+_PII_KEYWORD_TRIGGER = re.compile(
+    r"\b(pii|ssn|social.?security|email|e-mail|phone|phone.?number|"
+    r"credit.?card|password|personal|private|sensitive|confidential|"
+    r"dob|date.?of.?birth|address|passport|license|bank.?account|iban|"
+    r"identifier|personally.?identifiable)\b",
+    re.IGNORECASE,
 )
 
 
@@ -198,9 +209,28 @@ async def handle_pii_redaction(query: str) -> DeterministicResult | None:
     """
     When a user explicitly asks to redact PII from text, this handler runs
     Presidio directly and returns the redacted text — no LLM call needed.
+
+    Trigger logic (decoupled):
+      1. Query must contain an action verb (redact, remove, clean, ...).
+      2a. If an explicit PII keyword is also present → proceed immediately.
+      2b. If no keyword but Presidio detects actual PII in the query → proceed.
+      3. If neither condition is met → return None (defer to LLM).
     """
-    if not _PII_REDACT_TRIGGER.search(query):
-        return None
+    if not _PII_ACTION_TRIGGER.search(query):
+        return None  # No intent to do anything — bail early
+
+    has_pii_keyword = bool(_PII_KEYWORD_TRIGGER.search(query))
+
+    if not has_pii_keyword:
+        # No explicit keyword — run a lightweight Presidio scan to see if
+        # there is real PII in the query before committing to redaction.
+        try:
+            from app.pii_engine import scan_messages
+            scan_result = await scan_messages([query])
+            if not scan_result.detected:
+                return None  # Action verb present but no PII found → skip
+        except Exception:
+            return None  # Presidio unavailable — let the LLM handle it
 
     try:
         from app.pii_engine import _get_analyzer  # type: ignore[attr-defined]

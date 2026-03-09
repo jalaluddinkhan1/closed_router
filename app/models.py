@@ -58,15 +58,8 @@ class RoutingMetadata(BaseModel):
     decision_layer: Literal[
         # Safety gate
         "layer1_rules",
-        # Model-selector (legacy tri-modal, still used for Mode 2 selection)
-        "layer2_semantic",
-        "layer3_agent",
+        # Passthrough (no rule fired, direct MoE path)
         "passthrough",
-        # Tri-modal cascade classifier layers
-        "heuristic_layer1",
-        "semantic_layer2",
-        "llm_classifier_layer3",
-        "default_no_content",
         # MoE Router
         "moe_router",
     ]

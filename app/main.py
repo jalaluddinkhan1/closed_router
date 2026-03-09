@@ -6,11 +6,14 @@ FastAPI application entry point — Tri-Modal Adaptive Orchestrator (MoE Edition
 
 from __future__ import annotations
 
+import time
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import get_settings
 from app.logger import get_logger
@@ -21,6 +24,42 @@ from app.experts.registry import get_registry
 
 settings = get_settings()
 logger   = get_logger("router.main")
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """
+    Simple in-memory per-IP rate limiter.
+    Default: 60 requests / 60-second sliding window per IP.
+    Only applied to /v1/* routes to avoid penalising health checks.
+    """
+
+    def __init__(self, app: Any, requests_per_minute: int = 60) -> None:
+        super().__init__(app)
+        self._rpm     = requests_per_minute
+        self._window  = 60.0
+        self._buckets: dict[str, list[float]] = defaultdict(list)
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        if not request.url.path.startswith("/v1/"):
+            return await call_next(request)
+
+        ip  = (request.client.host if request.client else None) or "unknown"
+        now = time.monotonic()
+
+        bucket = self._buckets[ip]
+        # Evict timestamps outside the rolling window
+        self._buckets[ip] = [t for t in bucket if now - t < self._window]
+
+        if len(self._buckets[ip]) >= self._rpm:
+            logger.warning("Rate limit exceeded: ip=%s count=%d", ip, len(self._buckets[ip]))
+            return Response(
+                content='{"detail":"Rate limit exceeded. Max 60 requests per minute."}',
+                status_code=429,
+                media_type="application/json",
+            )
+
+        self._buckets[ip].append(now)
+        return await call_next(request)
 
 
 @asynccontextmanager
@@ -70,6 +109,7 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
 
+    app.add_middleware(RateLimitMiddleware, requests_per_minute=60)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
